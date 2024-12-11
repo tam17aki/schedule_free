@@ -1,17 +1,20 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
-# 
+#
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import Tuple, Union, Optional, Iterable, Dict, Callable, Any
-from typing_extensions import TypeAlias
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
+
 import torch
 import torch.optim
+from typing_extensions import TypeAlias
+
 try:
     from torch.optim.optimizer import ParamsT
 except ImportError:
-    ParamsT : TypeAlias = Union[Iterable[torch.Tensor], Iterable[Dict[str, Any]]]
+    ParamsT: TypeAlias = Union[Iterable[torch.Tensor], Iterable[Dict[str, Any]]]
 import math
+
 
 class RAdamScheduleFree(torch.optim.Optimizer):
     r"""
@@ -35,6 +38,8 @@ class RAdamScheduleFree(torch.optim.Optimizer):
             improve numerical stability. (default: 1e-8).
         weight_decay (float):
             Weight decay, i.e. a L2 penalty (default: 0).
+        decoupled_weight_decay (bool):
+            Flag whether to use decoupled weight decay (default: False).
         r (float): Use polynomial weighting in the average
             with power r (default 0).
         weight_lr_power (float): During warmup, the weights in the average will
@@ -51,31 +56,35 @@ class RAdamScheduleFree(torch.optim.Optimizer):
             (default True).
     """
 
-    def __init__(self,
-                 params: ParamsT,
-                 lr: Union[float, torch.Tensor] = 0.0025,
-                 betas: Tuple[float, float] = (0.9, 0.999),
-                 eps: float = 1e-8,
-                 weight_decay: float = 0,
-                 r: float = 0.0,
-                 weight_lr_power: float = 2.0,
-                 foreach: Optional[bool] = hasattr(torch, "_foreach_mul_"),
-                 silent_sgd_phase: bool = True
-                 ):
-        
-        defaults = dict(lr=lr,
-                        betas=betas,
-                        eps=eps,
-                        r=r,
-                        k=0,
-                        train_mode=False,
-                        weight_sum=0.0,
-                        lr_max=-1.0,
-                        scheduled_lr=0.0,
-                        weight_lr_power=weight_lr_power,
-                        weight_decay=weight_decay,
-                        foreach=foreach,
-                        silent_sgd_phase=silent_sgd_phase)
+    def __init__(
+        self,
+        params: ParamsT,
+        lr: Union[float, torch.Tensor] = 0.0025,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0,
+        decoupled_weight_decay: bool = False,
+        r: float = 0.0,
+        weight_lr_power: float = 2.0,
+        foreach: Optional[bool] = hasattr(torch, "_foreach_mul_"),
+        silent_sgd_phase: bool = True,
+    ):
+        defaults = dict(
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            r=r,
+            k=0,
+            train_mode=False,
+            weight_sum=0.0,
+            lr_max=-1.0,
+            scheduled_lr=0.0,
+            weight_lr_power=weight_lr_power,
+            weight_decay=weight_decay,
+            decoupled_weight_decay=decoupled_weight_decay,
+            foreach=foreach,
+            silent_sgd_phase=silent_sgd_phase,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -128,11 +137,12 @@ class RAdamScheduleFree(torch.optim.Optimizer):
             eps = group["eps"]
             beta1, beta2 = group["betas"]
             decay = group["weight_decay"]
+            decoupled_weight_decay = group["decoupled_weight_decay"]
             silent_sgd_phase = group["silent_sgd_phase"]
             k = group["k"]  # current steps
             step = k + 1
-            r = group['r']
-            weight_lr_power = group['weight_lr_power']
+            r = group["r"]
+            weight_lr_power = group["weight_lr_power"]
 
             beta2_t = beta2**step
             bias_correction2 = 1 - beta2_t
@@ -142,7 +152,13 @@ class RAdamScheduleFree(torch.optim.Optimizer):
             # compute the length of the approximated SMA
             rho_t = rho_inf - 2 * step * beta2_t / bias_correction2
             rect = (
-                ((rho_t - 4) * (rho_t - 2) * rho_inf / ((rho_inf - 4) * (rho_inf - 2) * rho_t)) ** 0.5
+                (
+                    (rho_t - 4)
+                    * (rho_t - 2)
+                    * rho_inf
+                    / ((rho_inf - 4) * (rho_inf - 2) * rho_t)
+                )
+                ** 0.5
                 if rho_t > 4.0
                 else float(not silent_sgd_phase)
             )
@@ -165,12 +181,19 @@ class RAdamScheduleFree(torch.optim.Optimizer):
 
             for p in active_p:
                 if "z" not in self.state[p]:
-                    self.state[p]["z"] = torch.clone(p, memory_format=torch.preserve_format)
-                    self.state[p]["exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    self.state[p]["z"] = torch.clone(
+                        p, memory_format=torch.preserve_format
+                    )
+                    self.state[p]["exp_avg_sq"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
 
             if group["foreach"] and len(active_p) > 0:
                 y, grad, exp_avg_sq, z = zip(
-                    *[(p, p.grad, self.state[p]["exp_avg_sq"], self.state[p]["z"]) for p in active_p]
+                    *[
+                        (p, p.grad, self.state[p]["exp_avg_sq"], self.state[p]["z"])
+                        for p in active_p
+                    ]
                 )
 
                 # Decay the first and second moment running average coefficient
@@ -188,7 +211,10 @@ class RAdamScheduleFree(torch.optim.Optimizer):
 
                 # Weight decay calculated at y
                 if decay != 0:
-                    torch._foreach_add_(grad, y, alpha=decay)
+                    if decoupled_weight_decay:
+                        torch._foreach_mul_(y, 1 - lr * decay)
+                    else:
+                        torch._foreach_add_(grad, y, alpha=decay)
 
                 # These operations update y in-place,
                 # without computing x explicitly.
@@ -221,7 +247,10 @@ class RAdamScheduleFree(torch.optim.Optimizer):
 
                     # Weight decay calculated at y
                     if decay != 0:
-                        grad_normalized.add_(y, alpha=decay)
+                        if decoupled_weight_decay:
+                            grad_normalized.mul_(y, 1 - lr * decay)
+                        else:
+                            grad_normalized.add_(y, alpha=decay)
 
                     # These operations update y in-place,
                     # without computing x explicitly.
