@@ -13,12 +13,11 @@ try:
     from torch.optim.optimizer import ParamsT
 except ImportError:
     ParamsT: TypeAlias = Union[Iterable[torch.Tensor], Iterable[Dict[str, Any]]]
-import math
 
 
 class RAdamScheduleFree(torch.optim.Optimizer):
-    r"""
-    Schedule-Free RAdam
+    r"""Schedule-Free RAdam.
+
     Neither warmup hyperparameter nor scheduler is needed with this optimizer.
 
     This optimizer requires that .train() and .eval() be called before the
@@ -48,11 +47,14 @@ class RAdamScheduleFree(torch.optim.Optimizer):
         foreach (bool): Use a foreach-backed implementation of the optimizer.
             Should be significantly faster, but will have higher peak memory
             usage (default True if supported in your PyTorch version).
-        silent_sgd_phase (bool): If True, the optimizer will not use the first SGD phase of RAdam.
-            This means that the optimizer will not update model parameters during the early training
-            steps (e.g., < 5 when β_2 = 0.999), but just update the momentum values of the optimizer.
-            This helps stabilize training by ensuring smoother warmup behavior and more reliable
-            calculation of the moving average coefficient (`ckp1`). Recommended to set to True
+        silent_sgd_phase (bool): If True, the optimizer will not use
+            the first SGD phase of RAdam.  This means that the
+            optimizer will not update model parameters during the
+            early training steps (e.g., < 5 when β_2 = 0.999), but
+            just update the momentum values of the optimizer.  This
+            helps stabilize training by ensuring smoother warmup
+            behavior and more reliable calculation of the moving
+            average coefficient (`ckp1`). Recommended to set to True
             (default True).
     """
 
@@ -69,6 +71,7 @@ class RAdamScheduleFree(torch.optim.Optimizer):
         foreach: Optional[bool] = hasattr(torch, "_foreach_mul_"),
         silent_sgd_phase: bool = True,
     ):
+        """Initialize class."""
         defaults = dict(
             lr=lr,
             betas=betas,
@@ -89,6 +92,7 @@ class RAdamScheduleFree(torch.optim.Optimizer):
 
     @torch.no_grad()
     def eval(self):
+        """Turn off training mode."""
         for group in self.param_groups:
             train_mode = group["train_mode"]
             beta1, _ = group["betas"]
@@ -102,6 +106,7 @@ class RAdamScheduleFree(torch.optim.Optimizer):
 
     @torch.no_grad()
     def train(self):
+        """Turn on training mode."""
         for group in self.param_groups:
             train_mode = group["train_mode"]
             beta1, _ = group["betas"]
